@@ -30,6 +30,7 @@ set(LLVM_LINK_COMPONENTS
   coverage
   executionengine
   ipo
+  jitlink
   lto
   mc
   object
@@ -351,7 +352,7 @@ add_file_dependencies(${CMAKE_CURRENT_SOURCE_DIR}/CIFactory.cpp
 # If LLVM is external, but Clang is builtin, we must use some files
 # from patched (builtin) version of LLVM
 if ((NOT builtin_llvm) AND builtin_clang)
-  set(FixInclude "${CMAKE_SOURCE_DIR}/interpreter/llvm/src/include")
+  set(FixInclude "${CMAKE_SOURCE_DIR}/interpreter/llvm-project/llvm/include")
 
   get_property(P SOURCE IncrementalJIT.cpp PROPERTY INCLUDE_DIRECTORIES)
   list(INSERT P 0 ${FixInclude})

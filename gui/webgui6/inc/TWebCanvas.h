@@ -1,7 +1,7 @@
 // Author: Sergey Linev, GSI   7/12/2016
 
 /*************************************************************************
- * Copyright (C) 1995-2021, Rene Brun and Fons Rademakers.               *
+ * Copyright (C) 1995-2023, Rene Brun and Fons Rademakers.               *
  * All rights reserved.                                                  *
  *                                                                       *
  * For the licensing terms see $ROOTSYS/LICENSE.                         *
@@ -79,7 +79,7 @@ protected:
 
    std::shared_ptr<ROOT::Experimental::RWebWindow> fWindow; ///!< configured display
 
-   Bool_t fReadOnly{true};         ///<! in read-only mode canvas cannot be changed from client side
+   Bool_t fReadOnly{kFALSE};       ///<! in read-only mode canvas cannot be changed from client side
    Long64_t fCanvVersion{1};       ///<! actual canvas version, changed with every new Modified() call
    UInt_t fClientBits{0};          ///<! latest status bits from client like editor visible or not
    TList fPrimitivesLists;         ///<! list of lists of primitives, temporary collected during painting
@@ -97,6 +97,7 @@ protected:
    UInt_t fStyleHash{0};           ///<! last hash of gStyle
    Long64_t fColorsVersion{0};     ///<! current colors/palette version, checked every time when new snapshot created
    UInt_t fColorsHash{0};          ///<! last hash of colors/palette
+   Bool_t fTF1UseSave{kFALSE};     ///<! use save buffer for TF1/TF2, need when evaluation failed on client side
 
    UpdatedSignal_t fUpdatedSignal; ///<! signal emitted when canvas updated or state is changed
    PadSignal_t fActivePadChangedSignal; ///<! signal emitted when active pad changed in the canvas
@@ -225,15 +226,15 @@ public:
    void SetAsyncMode(Bool_t on = kTRUE) { fAsyncMode = on; }
    Bool_t IsAsyncMode() const { return fAsyncMode; }
 
-   static TString CreatePadJSON(TPad *pad, Int_t json_compression = 0);
-   static TString CreateCanvasJSON(TCanvas *c, Int_t json_compression = 0);
+   static TString CreatePadJSON(TPad *pad, Int_t json_compression = 0, Bool_t batchmode = kFALSE);
+   static TString CreateCanvasJSON(TCanvas *c, Int_t json_compression = 0, Bool_t batchmode = kFALSE);
    static Int_t StoreCanvasJSON(TCanvas *c, const char *filename, const char *option = "");
 
    static bool ProduceImage(TPad *pad, const char *filename, Int_t width = 0, Int_t height = 0);
 
    static TCanvasImp *NewCanvas(TCanvas *c, const char *name, Int_t x, Int_t y, UInt_t width, UInt_t height);
 
-   ClassDefOverride(TWebCanvas, 0) // Web-based implementation for TCanvasImp, read-only mode
+   ClassDefOverride(TWebCanvas, 0) // Web-based implementation for TCanvasImp
 };
 
 #endif

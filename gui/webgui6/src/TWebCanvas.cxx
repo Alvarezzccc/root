@@ -1,7 +1,7 @@
 // Author: Sergey Linev, GSI   7/12/2016
 
 /*************************************************************************
- * Copyright (C) 1995-2021, Rene Brun and Fons Rademakers.               *
+ * Copyright (C) 1995-2023, Rene Brun and Fons Rademakers.               *
  * All rights reserved.                                                  *
  *                                                                       *
  * For the licensing terms see $ROOTSYS/LICENSE.                         *
@@ -30,6 +30,7 @@
 #include "TArrayI.h"
 #include "TList.h"
 #include "TF1.h"
+#include "TF2.h"
 #include "TH1.h"
 #include "TH1K.h"
 #include "THStack.h"
@@ -58,8 +59,23 @@
 /** \class TWebCanvas
 \ingroup webgui6
 
-Basic TCanvasImp ABI implementation for Web-based GUI
-Provides painting of main ROOT6 classes in web browsers
+Basic TCanvasImp ABI implementation for Web-based Graphics
+Provides painting of main ROOT classes in web browsers using [JSROOT](https://root.cern/js/)
+
+Following settings parameters can be useful for TWebCanvas:
+
+     WebGui.FullCanvas:       1     read-only mode (0), full-functional canvas (1) (default - 1)
+     WebGui.StyleDelivery:    1     provide gStyle object to JSROOT client (default - 1)
+     WebGui.PaletteDelivery:  1     provide color palette to JSROOT client (default - 1)
+     WebGui.TF1UseSave:       0     used saved values for function drawing (1) or calculate function on the client side (0) (default - 0)
+
+TWebCanvas is used by default in interactive ROOT session. To use web-based canvas in batch mode for image
+generation, one should explicitly specify `--web` option when starting ROOT:
+
+    [shell] root -b --web tutorials/hsimple.root -e 'hpxpy->Draw("colz"); c1->SaveAs("image.png");'
+
+If for any reasons TWebCanvas does not provide required functionality, one always can disable it.
+Either by specifying `root --web=off` when starting ROOT or by setting `Canvas.Name: TRootCanvas` in rootrc file.
 
 */
 
@@ -75,6 +91,7 @@ TWebCanvas::TWebCanvas(TCanvas *c, const char *name, Int_t x, Int_t y, UInt_t wi
    fStyleDelivery = gEnv->GetValue("WebGui.StyleDelivery", 1);
    fPaletteDelivery = gEnv->GetValue("WebGui.PaletteDelivery", 1);
    fPrimitivesMerge = gEnv->GetValue("WebGui.PrimitivesMerge", 100);
+   fTF1UseSave = gEnv->GetValue("WebGui.TF1UseSave", (Int_t) 0) > 0;
    fJsonComp = gEnv->GetValue("WebGui.JsonComp", TBufferJSON::kSameSuppression + TBufferJSON::kNoSpaces);
 }
 
@@ -395,6 +412,10 @@ void TWebCanvas::CreatePadSnapshot(TPadWebSnapshot &paddata, TPad *pad, Long64_t
          need_frame = true;
          if (strlen(obj->GetTitle()) > 0)
             need_title = obj->GetTitle();
+      } else if (obj->InheritsFrom(TF1::Class())) {
+         need_frame = !obj->InheritsFrom(TF2::Class());
+         if (!has_histo && (strlen(obj->GetTitle()) > 0))
+            need_title = obj->GetTitle();
       } else if (obj->InheritsFrom(TPaveText::Class())) {
          if (strcmp(obj->GetName(), "title") == 0)
             title = static_cast<TPaveText *>(obj);
@@ -633,6 +654,29 @@ void TWebCanvas::CreatePadSnapshot(TPadWebSnapshot &paddata, TPad *pad, Long64_t
             fPrimitivesLists.Add(funcs);
 
          first_obj = false;
+      } else if (obj->InheritsFrom(TF1::Class())) {
+         flush_master();
+         auto f1 = static_cast<TF1 *> (obj);
+
+         TString f1opt = iter.GetOption();
+
+         if (f1->IsA() == TF1::Class() || f1->IsA() == TF2::Class()) {
+            if (paddata.IsBatchMode() || fTF1UseSave)
+               f1->Save(0, 0, 0, 0, 0, 0);
+            if (fTF1UseSave)
+               f1opt.Append(";force_saved");
+         }
+
+         if (first_obj) {
+            auto hist = f1->GetHistogram();
+            paddata.NewPrimitive(hist, "__ignore_drawing__").SetSnapshot(TWebSnapshot::kObject, hist);
+            f1opt.Append(";webcanv_hist");
+         }
+
+         paddata.NewPrimitive(f1, f1opt.Data()).SetSnapshot(TWebSnapshot::kObject, f1);
+
+         first_obj = false;
+
       } else if (obj->InheritsFrom(TGaxis::Class())) {
          flush_master();
          auto gaxis = static_cast<TGaxis *> (obj);
@@ -754,7 +798,7 @@ void TWebCanvas::CheckDataToSend(unsigned connid)
 
          buf = "SNAP6:"s + std::to_string(fCanvVersion) + ":"s;
 
-         TCanvasWebSnapshot holder(IsReadOnly());
+         TCanvasWebSnapshot holder(IsReadOnly(), true, false); // readonly, set ids, batchmode
 
          // scripts send only when canvas drawn for the first time
          if (!conn.fSendVersion)
@@ -765,7 +809,7 @@ void TWebCanvas::CheckDataToSend(unsigned connid)
          CreatePadSnapshot(holder, Canvas(), conn.fSendVersion, [&buf, &conn, this](TPadWebSnapshot *snap) {
             auto json = TBufferJSON::ToJSON(snap, fJsonComp);
             auto hash = json.Hash();
-            if (conn.fLastSendHash && (conn.fLastSendHash == hash)) {
+            if (conn.fLastSendHash && (conn.fLastSendHash == hash) && conn.fSendVersion) {
                // prevent looping when same data send many times
                buf.clear();
             } else {
@@ -776,8 +820,10 @@ void TWebCanvas::CheckDataToSend(unsigned connid)
 
          conn.fCheckedVersion = fCanvVersion;
 
-         if (!buf.empty())
-            conn.fSendVersion = fCanvVersion;
+         conn.fSendVersion = fCanvVersion;
+
+         if (buf.empty())
+            conn.fDrawVersion = fCanvVersion;
 
       } else if (!conn.fSend.empty()) {
 
@@ -1336,6 +1382,10 @@ Bool_t TWebCanvas::ProcessData(unsigned connid, const std::string &arg)
             }
          }
       }
+   } else if (ROOT::Experimental::RWebWindow::IsFileDialogMessage(arg)) {
+
+      ROOT::Experimental::RWebWindow::EmbedFileDialog(fWindow, connid, arg);
+
    } else if (IsReadOnly()) {
 
       // all following messages are not allowed in readonly mode
@@ -1564,6 +1614,23 @@ Bool_t TWebCanvas::ProcessData(unsigned connid, const std::string &arg)
          Canvas()->fCw = arr->at(0);
          Canvas()->fCh = arr->at(1);
       }
+   } else if (arg.compare(0, 7, "POPOBJ:") == 0) {
+      auto arr = TBufferJSON::FromJSON<std::vector<std::string>>(arg.substr(7));
+      if (arr && arr->size() == 2) {
+         TPad *pad = dynamic_cast<TPad *>(FindPrimitive(arr->at(0)));
+         TObject *obj = FindPrimitive(arr->at(1), 0, pad);
+         if (pad && obj && (obj != pad->GetListOfPrimitives()->Last())) {
+            TIter next(pad->GetListOfPrimitives());
+            while (auto o = next())
+               if (obj == o) {
+                  TString opt = next.GetOption();
+                  pad->GetListOfPrimitives()->Remove(obj);
+                  pad->GetListOfPrimitives()->AddLast(obj, opt.Data());
+                  pad->Modified();
+                  break;
+               }
+         }
+      }
    } else if (arg == "INTERRUPT"s) {
       gROOT->SetInterrupt();
    } else {
@@ -1720,7 +1787,11 @@ Bool_t TWebCanvas::WaitWhenCanvasPainted(Long64_t ver)
    return kFALSE;
 }
 
-TString TWebCanvas::CreatePadJSON(TPad *pad, Int_t json_compression)
+//////////////////////////////////////////////////////////////////////////////////////////
+/// Create JSON painting output for given pad
+/// Produce JSON can be used for offline drawing with JSROOT
+
+TString TWebCanvas::CreatePadJSON(TPad *pad, Int_t json_compression, Bool_t batchmode)
 {
    TString res;
    if (!pad)
@@ -1728,11 +1799,11 @@ TString TWebCanvas::CreatePadJSON(TPad *pad, Int_t json_compression)
 
    TCanvas *c = dynamic_cast<TCanvas *>(pad);
    if (c) {
-      res = CreateCanvasJSON(c, json_compression);
+      res = CreateCanvasJSON(c, json_compression, batchmode);
    } else {
       auto imp = std::make_unique<TWebCanvas>(pad->GetCanvas(), pad->GetName(), 0, 0, 1000, 500);
 
-      TPadWebSnapshot holder(true, false); // readonly, no ids
+      TPadWebSnapshot holder(true, false, batchmode); // readonly, no ids, batchmode
 
       imp->CreatePadSnapshot(holder, pad, 0, [&res, json_compression](TPadWebSnapshot *snap) {
          res = TBufferJSON::ToJSON(snap, json_compression);
@@ -1746,7 +1817,7 @@ TString TWebCanvas::CreatePadJSON(TPad *pad, Int_t json_compression)
 /// Create JSON painting output for given canvas
 /// Produce JSON can be used for offline drawing with JSROOT
 
-TString TWebCanvas::CreateCanvasJSON(TCanvas *c, Int_t json_compression)
+TString TWebCanvas::CreateCanvasJSON(TCanvas *c, Int_t json_compression, Bool_t batchmode)
 {
    TString res;
 
@@ -1756,7 +1827,7 @@ TString TWebCanvas::CreateCanvasJSON(TCanvas *c, Int_t json_compression)
    {
       auto imp = std::make_unique<TWebCanvas>(c, c->GetName(), 0, 0, 1000, 500);
 
-      TCanvasWebSnapshot holder(true, false); // readonly, no ids
+      TCanvasWebSnapshot holder(true, false, batchmode); // readonly, no ids, batchmode
 
       imp->CreatePadSnapshot(holder, c, 0, [&res, json_compression](TPadWebSnapshot *snap) {
          res = TBufferJSON::ToJSON(snap, json_compression);
@@ -1768,11 +1839,17 @@ TString TWebCanvas::CreateCanvasJSON(TCanvas *c, Int_t json_compression)
 
 //////////////////////////////////////////////////////////////////////////////////////////
 /// Create JSON painting output for given canvas and store into the file
-/// See TBufferJSON::ExportToFile() method for more details
+/// See TBufferJSON::ExportToFile() method for more details about option
+/// If option string starts with symbol 'b', JSON for batch mode will be generated
 
 Int_t TWebCanvas::StoreCanvasJSON(TCanvas *c, const char *filename, const char *option)
 {
    Int_t res = 0;
+   Bool_t batchmode = kFALSE;
+   if (option && *option == 'b') {
+      batchmode = kTRUE;
+      ++option;
+   }
 
    if (!c)
       return res;
@@ -1780,7 +1857,7 @@ Int_t TWebCanvas::StoreCanvasJSON(TCanvas *c, const char *filename, const char *
    {
       auto imp = std::make_unique<TWebCanvas>(c, c->GetName(), 0, 0, 1000, 500);
 
-      TCanvasWebSnapshot holder(true, false); // readonly, no ids
+      TCanvasWebSnapshot holder(true, false, batchmode); // readonly, no ids, batchmode
 
       imp->CreatePadSnapshot(holder, c, 0, [&res, filename, option](TPadWebSnapshot *snap) {
          res = TBufferJSON::ExportToFile(filename, snap, option);
@@ -1799,7 +1876,7 @@ bool TWebCanvas::ProduceImage(TPad *pad, const char *fileName, Int_t width, Int_
    if (!pad)
       return false;
 
-   auto json = TWebCanvas::CreatePadJSON(pad, TBufferJSON::kNoSpaces + TBufferJSON::kSameSuppression);
+   auto json = CreatePadJSON(pad, TBufferJSON::kNoSpaces + TBufferJSON::kSameSuppression, kTRUE);
    if (!json.Length())
       return false;
 
@@ -1888,8 +1965,14 @@ TPad *TWebCanvas::ProcessObjectOptions(TWebObjectOptions &item, TPad *pad, int i
             stats->AddText(item.fcust.substr(pos_start).c_str());
          }
       }
+   } else if (item.fcust.compare(0,9,"func_fail") == 0) {
+      if (!fTF1UseSave) {
+         fTF1UseSave = kTRUE;
+         modified = true;
+      } else {
+         Error("ProcessObjectOptions", "Client fails to calculate function %s cl %s but it should not try!", obj ? obj->GetName() : "---", obj ? obj->ClassName() : "---");
+      }
    }
-
 
    return modified ? objpad : nullptr;
 }
@@ -1945,6 +2028,7 @@ TObject *TWebCanvas::FindPrimitive(const std::string &sid, int idcnt, TPad *pad,
       TScatter *scatter = obj->InheritsFrom(TScatter::Class()) ? static_cast<TScatter *>(obj) : nullptr;
       TMultiGraph *mg = obj->InheritsFrom(TMultiGraph::Class()) ? static_cast<TMultiGraph *>(obj) : nullptr;
       THStack *hs = obj->InheritsFrom(THStack::Class()) ? static_cast<THStack *>(obj) : nullptr;
+      TF1 *f1 = obj->InheritsFrom(TF1::Class()) ? static_cast<TF1 *>(obj) : nullptr;
 
       if (search_hist) {
          if (objlnk)
@@ -1960,6 +2044,8 @@ TObject *TWebCanvas::FindPrimitive(const std::string &sid, int idcnt, TPad *pad,
             return getHistogram(mg);
          if (hs)
             return getHistogram(hs);
+         if (f1)
+            return getHistogram(f1);
 
          if (objlnk)
             *objlnk = nullptr;
@@ -1971,7 +2057,7 @@ TObject *TWebCanvas::FindPrimitive(const std::string &sid, int idcnt, TPad *pad,
          if (objpad)
             *objpad = pad;
 
-         if (kind.find("hist") == 0) {
+         if (kind.compare(0, 4, "hist") == 0) {
             if (gr)
                obj = h1 = getHistogram(gr);
             else if (mg)
@@ -1980,6 +2066,8 @@ TObject *TWebCanvas::FindPrimitive(const std::string &sid, int idcnt, TPad *pad,
                obj = h1 = getHistogram(hs);
             else if (scatter)
                obj = h1 = getHistogram(scatter);
+            else if (f1)
+               obj = h1 = getHistogram(f1);
 
             kind.erase(0,4);
             if (!kind.empty() && (kind[0]=='#')) kind.erase(0,1);

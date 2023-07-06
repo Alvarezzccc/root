@@ -11,7 +11,8 @@ sap.ui.define([
    'sap/m/Button',
    'sap/m/ButtonType',
    'sap/ui/layout/SplitterLayoutData',
-   'sap/ui/core/ResizeHandler'
+   'sap/ui/core/ResizeHandler',
+   'rootui5/browser/controller/FileDialog.controller'
 ], function (Controller,
              Component,
              JSONModel,
@@ -24,7 +25,8 @@ sap.ui.define([
              Button,
              ButtonType,
              SplitterLayoutData,
-             ResizeHandler) {
+             ResizeHandler,
+             FileDialogController) {
    "use strict";
 
    function chk_icon(flag) {
@@ -277,17 +279,41 @@ sap.ui.define([
             case "Quit ROOT":
                p.sendWebsocket("QUIT");
                break;
-            case "Canvas.png":
-            case "Canvas.jpeg":
-            case "Canvas.svg":
+            case 'Canvas.png':
+            case 'Canvas.jpeg':
+            case 'Canvas.svg':
                p.saveCanvasAsFile(name);
                break;
-            case "Canvas.root":
-            case "Canvas.pdf":
-            case "Canvas.ps":
-            case "Canvas.C":
+            case 'Canvas.root':
+            case 'Canvas.pdf':
+            case 'Canvas.ps':
+            case 'Canvas.C':
                p.sendSaveCommand(name);
                break;
+            case 'Save as ...': {
+               let filters = ['Png files (*.png)', 'Jpeg files (*.jpeg)', 'SVG files (*.svg)', 'ROOT files (*.root)' ];
+               if (!p?.v7canvas)
+                  filters.push('PDF files (*.pdf)', 'C++ (*.cxx *.cpp *.c)');
+
+               FileDialogController.SaveAs({
+                  websocket: p._websocket,
+                  filename: 'Canvas.png',
+                  title: 'Select file name to save canvas',
+                  filter: 'Png files',
+                  filters,
+                  // working_path: "/Home",
+                  onOk: fname => {
+                     if (fname.endsWith('.png') || fname.endsWith('.jpeg') || fname.endsWith('.svg'))
+                         p.saveCanvasAsFile(fname);
+                     else
+                         p.sendSaveCommand(fname);
+                  },
+                  onCancel: () => {},
+                  onFailure: () => {}
+               });
+
+               break;
+           }
          }
 
          MessageToast.show(`Action triggered on item: ${name}`);
@@ -302,11 +328,11 @@ sap.ui.define([
       },
 
       onInterruptPress() {
-         this.getCanvasPainter()?.sendWebsocket("INTERRUPT");
+         this.getCanvasPainter()?.sendWebsocket('INTERRUPT');
       },
 
       onQuitRootPress() {
-         this.getCanvasPainter()?.sendWebsocket("QUIT");
+         this.getCanvasPainter()?.sendWebsocket('QUIT');
       },
 
       onReloadPress() {

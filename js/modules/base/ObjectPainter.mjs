@@ -1,5 +1,5 @@
 import { select as d3_select, pointer as d3_pointer } from '../d3.mjs';
-import { settings, constants, internals, isNodeJs, getPromise, BIT,
+import { settings, constants, internals, isNodeJs, isBatchMode, getPromise, BIT,
          prROOT, clTObjString, clTAxis, isObject, isFunc, isStr } from '../core.mjs';
 import { isPlainText, producePlainText, produceLatex, produceMathjax, typesetMathjax } from './latex.mjs';
 import { getElementRect, BasePainter, makeTranslate } from './BasePainter.mjs';
@@ -50,9 +50,11 @@ class ObjectPainter extends BasePainter {
    }
 
    /** @summary Returns pad name where object is drawn */
-   getPadName() {
-      return this.pad_name || '';
-   }
+   getPadName() { return this.pad_name || ''; }
+
+   /** @summary Indicates that drawing runs in batch mode
+     * @private */
+   isBatchMode() { return isBatchMode() ? true : (this.getCanvPainter()?.isBatchMode() ?? false); }
 
    /** @summary Assign snapid to the painter
     * @desc Identifier used to communicate with server side and identifies object on the server
@@ -98,6 +100,9 @@ class ObjectPainter extends BasePainter {
 
    /** @summary Returns drawn object */
    getObject() { return this.draw_object; }
+
+   /** @summary Returns drawn object name */
+   getObjectName() { return this.getObject()?.fName ?? ''; }
 
    /** @summary Returns drawn object class name */
    getClassName() { return this.getObject()?._typename ?? ''; }
@@ -163,12 +168,12 @@ class ObjectPainter extends BasePainter {
      * @desc works via pad painter and only when module was loaded */
    getSupportedDrawOptions() {
       let pp = this.getPadPainter(),
-          obj = this.getObject();
+          cl = this.getClassName();
 
-      if (!obj?._typename || !isFunc(pp?.getObjectDrawSettings))
+      if (!cl || !isFunc(pp?.getObjectDrawSettings))
          return [];
 
-      return pp.getObjectDrawSettings(prROOT + obj._typename, 'nosame')?.opts;
+      return pp.getObjectDrawSettings(prROOT + cl, 'nosame')?.opts;
    }
 
    /** @summary Central place to update objects drawing
@@ -205,7 +210,7 @@ class ObjectPainter extends BasePainter {
      * Such string typically used as object tooltip.
      * If result string larger than 20 symbols, it will be cutted. */
    getObjectHint() {
-      let hint = this.getItemName() || this.getObject()?.fName || this.getClassName() || '';
+      let hint = this.getItemName() || this.getObjectName() || this.getClassName() || '';
       return (hint.length <= 20) ? hint : hint.slice(0, 17) + '...';
    }
 
@@ -324,6 +329,19 @@ class ObjectPainter extends BasePainter {
       return this.draw_g;
    }
 
+   /** @summary Bring draw element to the front */
+   bringToFront(check_online) {
+      if (!this.draw_g) return;
+      let prnt = this.draw_g.node().parentNode;
+      prnt?.appendChild(this.draw_g.node());
+
+      if (!check_online || !this.snapid) return;
+      let pp = this.getPadPainter();
+      if (!pp?.snapid) return;
+
+      this.getCanvPainter()?.sendWebsocket('POPOBJ:'+JSON.stringify([pp.snapid.toString(), this.snapid.toString()]));
+   }
+
    /** @summary Canvas main svg element
      * @return {object} d3 selection with canvas svg
      * @protected */
@@ -341,7 +359,7 @@ class ObjectPainter extends BasePainter {
       if (!pad_name || c.empty()) return c;
 
       let cp = c.property('pad_painter');
-      if (cp && cp.pads_cache && cp.pads_cache[pad_name])
+      if (cp?.pads_cache && cp.pads_cache[pad_name])
          return d3_select(cp.pads_cache[pad_name]);
 
       c = c.select('.primitives_layer .__root_pad_' + pad_name);
@@ -350,6 +368,14 @@ class ObjectPainter extends BasePainter {
          cp.pads_cache[pad_name] = c.node();
       }
       return c;
+   }
+
+   /** @summary Provides identifier on server for requested sublement */
+   getSnapId(subelem) {
+      if (!this.snapid)
+         return '';
+
+      return this.snapid.toString() + (subelem ? '#'+subelem : '');
    }
 
    /** @summary Method selects immediate layer under canvas/pad main element
@@ -786,12 +812,12 @@ class ObjectPainter extends BasePainter {
    /** @summary Fill context menu for the object
      * @private */
    fillContextMenu(menu) {
-      let name = this.getObject()?.fName || '',
+      let name = this.getObjectName(),
           cl = this.getClassName();
 
       let p = cl.lastIndexOf('::');
       if (p > 0) cl = cl.slice(p+2);
-      let title = cl && name ? `${cl}:${name}` : cl ? cl : name || 'object';
+      let title = (cl && name) ? `${cl}:${name}` : (cl || name || 'object');
 
       menu.add(`header:${title}`);
 
@@ -1299,8 +1325,8 @@ class ObjectPainter extends BasePainter {
              let exec = item.fExec.slice(0, item.fExec.length-1) + args + ')';
              if (cp?.v7canvas)
                 cp.submitExec(execp, exec, kind);
-             else if (cp)
-                cp.sendWebsocket(`OBJEXEC:${item.$execid}:${exec}`);
+             else
+                cp?.sendWebsocket(`OBJEXEC:${item.$execid}:${exec}`);
          });
       }
 
@@ -1350,8 +1376,7 @@ class ObjectPainter extends BasePainter {
          _resolveFunc(_menu);
       };
 
-      let reqid = this.snapid;
-      if (kind) reqid += '#' + kind; // use # to separate object id from member specifier like 'x' or 'z'
+      let reqid = this.getSnapId(kind);
 
       menu._got_menu = false;
 
@@ -1592,6 +1617,7 @@ function getActivePad() {
   * the element even after minimal resize
   * Or one just supply object with exact sizes like { width:300, height:200, force:true };
   * @example
+  * import { resize } from 'https://root.cern/js/latest/modules/base/ObjectPainter.mjs';
   * resize('drawing', { width: 500, height: 200 });
   * resize(document.querySelector('#drawing'), true); */
 function resize(dom, arg) {
@@ -1612,6 +1638,7 @@ function resize(dom, arg) {
   * @param {string|object} dom - id or DOM element
   * @public
   * @example
+  * import { cleanup } from 'https://root.cern/js/latest/modules/base/ObjectPainter.mjs';
   * cleanup('drawing');
   * cleanup(document.querySelector('#drawing')); */
 function cleanup(dom) {
